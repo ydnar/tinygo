@@ -337,3 +337,10 @@ func libc_getpagesize() int32
 //
 //export syscall_libc_open
 func libc_open(pathname *byte, flags int32, mode uint32) int32
+
+func Setrlimit(resource int, rlim *Rlimit) error
+
+type Rlimit struct {
+	Cur uint64
+	Max uint64
+}

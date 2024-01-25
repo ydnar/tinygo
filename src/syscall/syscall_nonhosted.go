@@ -218,3 +218,9 @@ type RawSockaddrInet4 struct {
 type RawSockaddrInet6 struct {
 	// stub
 }
+
+func Setrlimit(resource int, rlim *Rlimit) error
+
+type Rlimit struct {
+	// stub
+}
