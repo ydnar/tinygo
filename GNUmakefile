@@ -382,6 +382,14 @@ TEST_PACKAGES_WINDOWS := \
 	text/template/parse \
 	$(nil)
 
+TEST_PACKAGES_WASIP2_GAP := \
+	compress/lzw \
+	compress/zlib \
+	internal/profile \
+	math \
+	math/cmplx \
+	os
+
 # Report platforms on which each standard library package is known to pass tests
 jointmp := $(shell echo /tmp/join.$$$$)
 report-stdlib-tests-pass:
@@ -434,9 +442,27 @@ tinygo-test-wasi-fast:
 tinygo-test-wasip1-fast:
 	GOOS=wasip1 GOARCH=wasm $(TINYGO) test $(TEST_PACKAGES_FAST) ./tests/runtime_wasi
 tinygo-test-wasip2-wip:
-	$(TINYGO) test -target wasip2 -x $(TEST_PACKAGES_FAST) ./tests/runtime_wasi
+	$(TINYGO) test -target wasip2 -x -v $(TEST_PACKAGES_FAST) ./tests/runtime_wasi
 tinygo-test-wasip2-dev:
 	$(TINYGO) test -target wasip2 -wit-package $$(tinygo env TINYGOROOT)/lib/wasi-cli/wit/ -wit-world wasi:cli/command -x -work encoding/csv
+tinygo-test-wasip2-sum-slow:
+	TINYGO=$(TINYGO) \
+	TARGET=wasip2 \
+	TESTOPTS="-x -work" \
+	PACKAGES="$(TEST_PACKAGES_SLOW)" \
+	gotestsum --raw-command -- ./tools/tgtestjson.sh
+tinygo-test-wasip2-sum-fast:
+	TINYGO=$(TINYGO) \
+	TARGET=wasip2 \
+	TESTOPTS="-x -work" \
+	PACKAGES="$(TEST_PACKAGES_FAST)" \
+	gotestsum --raw-command -- ./tools/tgtestjson.sh
+tinygo-test-wasip2-sum-gap:
+	TINYGO=$(TINYGO) \
+	TARGET=wasip2 \
+	TESTOPTS="-x -work" \
+	PACKAGES="$(TEST_PACKAGES_WASIP2_GAP)" \
+	gotestsum --raw-command -- ./tools/tgtestjson.sh 
 tinygo-bench-wasi:
 	$(TINYGO) test -target wasi -bench . $(TEST_PACKAGES_FAST) $(TEST_PACKAGES_SLOW)
 tinygo-bench-wasi-fast:
