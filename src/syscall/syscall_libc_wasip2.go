@@ -14,7 +14,6 @@ import (
 	"internal/wasi/cli/v0.2.0/stdin"
 	"internal/wasi/cli/v0.2.0/stdout"
 	wallclock "internal/wasi/clocks/v0.2.0/wall-clock"
-	"internal/wasi/filesystem/v0.2.0/preopens"
 	"internal/wasi/filesystem/v0.2.0/types"
 	ioerror "internal/wasi/io/v0.2.0/error"
 	"internal/wasi/io/v0.2.0/streams"
@@ -22,11 +21,10 @@ import (
 )
 
 func goString(cstr *byte) string {
-	return unsafe.String(cstr, strlen(cstr))
+	return unsafe.String(cstr, libc_strlen(cstr))
 }
 
-//export strlen
-func strlen(cstr *byte) uintptr {
+func libc_strlen(cstr *byte) uintptr {
 	if cstr == nil {
 		return 0
 	}
@@ -39,9 +37,7 @@ func strlen(cstr *byte) uintptr {
 }
 
 // ssize_t write(int fd, const void *buf, size_t count)
-//
-//export write
-func write(fd int32, buf *byte, count uint) int {
+func libc_write(fd int32, buf *byte, count uint) int {
 	if stream, ok := wasiStreams[fd]; ok {
 		return writeStream(stream, buf, count, 0)
 	}
@@ -56,7 +52,7 @@ func write(fd int32, buf *byte, count uint) int {
 		return -1
 	}
 
-	n := pwrite(fd, buf, count, int64(stream.offset))
+	n := libc_pwrite(fd, buf, count, int64(stream.offset))
 	if n == -1 {
 		return -1
 	}
@@ -65,9 +61,7 @@ func write(fd int32, buf *byte, count uint) int {
 }
 
 // ssize_t read(int fd, void *buf, size_t count);
-//
-//export read
-func read(fd int32, buf *byte, count uint) int {
+func libc_read(fd int32, buf *byte, count uint) int {
 	if stream, ok := wasiStreams[fd]; ok {
 		return readStream(stream, buf, count, 0)
 	}
@@ -82,7 +76,7 @@ func read(fd int32, buf *byte, count uint) int {
 		return -1
 	}
 
-	n := pread(fd, buf, count, int64(stream.offset))
+	n := libc_pread(fd, buf, count, int64(stream.offset))
 	if n == -1 {
 		// error during pread
 		return -1
@@ -96,7 +90,7 @@ func read(fd int32, buf *byte, count uint) int {
 // offsets individually, and if they don't match the current main offset, reopen the file stream at that location.
 
 type wasiFile struct {
-	d      types.Descriptor
+	d      wasiDescriptor
 	oflag  int32 // original open flags: O_RDONLY, O_WRONLY, O_RDWR
 	offset int64 // current fd offset; updated with each read/write
 	refs   int
@@ -223,9 +217,7 @@ func writeStream(stream *wasiStream, buf *byte, count uint, offset int64) int {
 func memcpy(dst, src unsafe.Pointer, size uintptr)
 
 // ssize_t pread(int fd, void *buf, size_t count, off_t offset);
-//
-//export pread
-func pread(fd int32, buf *byte, count uint, offset int64) int {
+func libc_pread(fd int32, buf *byte, count uint, offset int64) int {
 	// TODO(dgryski): Need to be consistent about all these checks; EBADF/EINVAL/... ?
 
 	if stream, ok := wasiStreams[fd]; ok {
@@ -262,9 +254,7 @@ func pread(fd int32, buf *byte, count uint, offset int64) int {
 }
 
 // ssize_t pwrite(int fd, void *buf, size_t count, off_t offset);
-//
-//export pwrite
-func pwrite(fd int32, buf *byte, count uint, offset int64) int {
+func libc_pwrite(fd int32, buf *byte, count uint, offset int64) int {
 	// TODO(dgryski): Need to be consistent about all these checks; EBADF/EINVAL/... ?
 	if stream, ok := wasiStreams[fd]; ok {
 		return writeStream(stream, buf, count, 0)
@@ -296,9 +286,7 @@ func pwrite(fd int32, buf *byte, count uint, offset int64) int {
 }
 
 // ssize_t lseek(int fd, off_t offset, int whence);
-//
-//export lseek
-func lseek(fd int32, offset int64, whence int) int64 {
+func libc_lseek(fd int32, offset int64, whence int) int64 {
 	if _, ok := wasiStreams[fd]; ok {
 		// can't lseek a stream
 		libcErrno = EBADF
@@ -333,9 +321,7 @@ func lseek(fd int32, offset int64, whence int) int64 {
 }
 
 // int close(int fd)
-//
-//export close
-func close(fd int32) int32 {
+func libc_close(fd int32) int32 {
 	if streams, ok := wasiStreams[fd]; ok {
 		if streams.out != nil {
 			// ignore any error
@@ -372,9 +358,7 @@ func close(fd int32) int32 {
 }
 
 // int dup(int fd)
-//
-//export dup
-func dup(fd int32) int32 {
+func libc_dup(fd int32) int32 {
 	// is fd a stream?
 	if stream, ok := wasiStreams[fd]; ok {
 		newfd := findFreeFD()
@@ -398,40 +382,30 @@ func dup(fd int32) int32 {
 }
 
 // void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset);
-//
-//export mmap
-func mmap(addr unsafe.Pointer, length uintptr, prot, flags, fd int32, offset uintptr) unsafe.Pointer {
+func libc_mmap(addr unsafe.Pointer, length uintptr, prot, flags, fd int32, offset uintptr) unsafe.Pointer {
 	libcErrno = ENOSYS
 	return unsafe.Pointer(^uintptr(0))
 }
 
 // int munmap(void *addr, size_t length);
-//
-//export munmap
-func munmap(addr unsafe.Pointer, length uintptr) int32 {
+func libc_munmap(addr unsafe.Pointer, length uintptr) int32 {
 	libcErrno = ENOSYS
 	return -1
 }
 
 // int mprotect(void *addr, size_t len, int prot);
-//
-//export mprotect
-func mprotect(addr unsafe.Pointer, len uintptr, prot int32) int32 {
+func libc_mprotect(addr unsafe.Pointer, len uintptr, prot int32) int32 {
 	libcErrno = ENOSYS
 	return -1
 }
 
 // int chmod(const char *pathname, mode_t mode);
-//
-//export chmod
-func chmod(pathname *byte, mode uint32) int32 {
+func libc_chmod(pathname *byte, mode uint32) int32 {
 	return 0
 }
 
 // int mkdir(const char *pathname, mode_t mode);
-//
-//export mkdir
-func mkdir(pathname *byte, mode uint32) int32 {
+func libc_mkdir(pathname *byte, mode uint32) int32 {
 	path := goString(pathname)
 	dir, relPath := findPreopenForPath(path)
 	if dir.d == cm.ResourceNone {
@@ -449,9 +423,7 @@ func mkdir(pathname *byte, mode uint32) int32 {
 }
 
 // int rmdir(const char *pathname);
-//
-//export rmdir
-func rmdir(pathname *byte) int32 {
+func libc_rmdir(pathname *byte) int32 {
 	path := goString(pathname)
 	dir, relPath := findPreopenForPath(path)
 	if dir.d == cm.ResourceNone {
@@ -469,9 +441,7 @@ func rmdir(pathname *byte) int32 {
 }
 
 // int rename(const char *from, *to);
-//
-//export rename
-func rename(from, to *byte) int32 {
+func libc_rename(from, to *byte) int32 {
 	fromPath := goString(from)
 	fromDir, fromRelPath := findPreopenForPath(fromPath)
 	if fromDir.d == cm.ResourceNone {
@@ -496,9 +466,7 @@ func rename(from, to *byte) int32 {
 }
 
 // int symlink(const char *from, *to);
-//
-//export symlink
-func symlink(from, to *byte) int32 {
+func libc_symlink(from, to *byte) int32 {
 	fromPath := goString(from)
 	fromDir, fromRelPath := findPreopenForPath(fromPath)
 	if fromDir.d == cm.ResourceNone {
@@ -530,9 +498,7 @@ func symlink(from, to *byte) int32 {
 }
 
 // int link(const char *from, *to);
-//
-//export link
-func link(from, to *byte) int32 {
+func libc_link(from, to *byte) int32 {
 	fromPath := goString(from)
 	fromDir, fromRelPath := findPreopenForPath(fromPath)
 	if fromDir.d == cm.ResourceNone {
@@ -564,9 +530,7 @@ func link(from, to *byte) int32 {
 }
 
 // int fsync(int fd);
-//
-//export fsync
-func fsync(fd int32) int32 {
+func libc_fsync(fd int32) int32 {
 	if _, ok := wasiStreams[fd]; ok {
 		// can't sync a stream
 		libcErrno = EBADF
@@ -597,9 +561,7 @@ func fsync(fd int32) int32 {
 }
 
 // ssize_t readlink(const char *path, void *buf, size_t count);
-//
-//export readlink
-func readlink(pathname *byte, buf *byte, count uint) int {
+func libc_readlink(pathname *byte, buf *byte, count uint) int {
 	path := goString(pathname)
 	dir, relPath := findPreopenForPath(path)
 	if dir.d == cm.ResourceNone {
@@ -624,9 +586,7 @@ func readlink(pathname *byte, buf *byte, count uint) int {
 }
 
 // int unlink(const char *pathname);
-//
-//export unlink
-func unlink(pathname *byte) int32 {
+func libc_unlink(pathname *byte) int32 {
 	path := goString(pathname)
 	dir, relPath := findPreopenForPath(path)
 	if dir.d == cm.ResourceNone {
@@ -643,17 +603,32 @@ func unlink(pathname *byte) int32 {
 	return 0
 }
 
+// pid_t fork(void);
+func libc_fork() int32 {
+	libcErrno = ENOSYS
+	return -1
+}
+
+// int execve(const char *filename, char *const argv[], char *const envp[]);
+func libc_execve(filename *byte, argv **byte, envp **byte) int {
+	libcErrno = ENOSYS
+	return -1
+}
+
 // int getpagesize(void);
-//
-//export getpagesize
-func getpagesize() int {
+func libc_getpagesize() int {
 	return 65536
 }
 
+// int chown(const char *pathname, uid_t owner, gid_t group);
+func libc_chown(pathname *byte, owner, group int) int32 {
+	libcErrno = ENOSYS
+	return -1
+}
+
 // int stat(const char *path, struct stat * buf);
-//
-//export stat
-func stat(pathname *byte, dst *Stat_t) int32 {
+func libc_stat(pathname *byte, udst unsafe.Pointer) int32 {
+	dst := (*Stat_t)(udst)
 	path := goString(pathname)
 	dir, relPath := findPreopenForPath(path)
 	if dir.d == cm.ResourceNone {
@@ -673,9 +648,8 @@ func stat(pathname *byte, dst *Stat_t) int32 {
 }
 
 // int fstat(int fd, struct stat * buf);
-//
-//export fstat
-func fstat(fd int32, dst *Stat_t) int32 {
+func libc_fstat(fd int32, udst unsafe.Pointer) int32 {
+	dst := (*Stat_t)(udst)
 	if _, ok := wasiStreams[fd]; ok {
 		// TODO(dgryski): fill in stat buffer for stdin etc
 		return -1
@@ -735,9 +709,8 @@ func setStatFromWASIStat(sstat *Stat_t, wstat *types.DescriptorStat) {
 }
 
 // int lstat(const char *path, struct stat * buf);
-//
-//export lstat
-func lstat(pathname *byte, dst *Stat_t) int32 {
+func libc_lstat(pathname *byte, udst unsafe.Pointer) int32 {
+	dst := (*Stat_t)(udst)
 	path := goString(pathname)
 	dir, relPath := findPreopenForPath(path)
 	if dir.d == cm.ResourceNone {
@@ -757,44 +730,46 @@ func lstat(pathname *byte, dst *Stat_t) int32 {
 }
 
 func init() {
-	populateEnvironment()
-	populatePreopens()
+	// populateEnvironment()
+	// populatePreopens()
 }
 
+type wasiDescriptor = types.Descriptor
+
 type wasiDir struct {
-	d    types.Descriptor // wasip2 descriptor
-	root string           // root path for this descriptor
-	rel  string           // relative path under root
+	d    wasiDescriptor // wasip2 descriptor
+	root string         // root path for this descriptor
+	rel  string         // relative path under root
 }
 
 var libcCWD wasiDir
 
-var wasiPreopens map[string]types.Descriptor
+var wasiPreopens map[string]wasiDescriptor
 
-func populatePreopens() {
-	var cwd string
+// func populatePreopens() {
+// 	var cwd string
 
-	// find CWD
-	result := environment.InitialCWD()
-	if s := result.Some(); s != nil {
-		cwd = *s
-	} else if s, _ := Getenv("PWD"); s != "" {
-		cwd = s
-	}
+// 	// find CWD
+// 	result := environment.InitialCWD()
+// 	if s := result.Some(); s != nil {
+// 		cwd = *s
+// 	} else if s, _ := Getenv("PWD"); s != "" {
+// 		cwd = s
+// 	}
 
-	dirs := preopens.GetDirectories().Slice()
-	preopens := make(map[string]types.Descriptor, len(dirs))
-	for _, tup := range dirs {
-		desc, path := tup.F0, tup.F1
-		if path == cwd {
-			libcCWD.d = desc
-			libcCWD.root = path
-			libcCWD.rel = ""
-		}
-		preopens[path] = desc
-	}
-	wasiPreopens = preopens
-}
+// 	dirs := preopens.GetDirectories().Slice()
+// 	preopens := make(map[string]wasiDescriptor, len(dirs))
+// 	for _, tup := range dirs {
+// 		desc, path := tup.F0, tup.F1
+// 		if path == cwd {
+// 			libcCWD.d = desc
+// 			libcCWD.root = path
+// 			libcCWD.rel = ""
+// 		}
+// 		preopens[path] = desc
+// 	}
+// 	wasiPreopens = preopens
+// }
 
 // -- BEGIN fs_wasip1.go --
 // The following section has been taken from upstream Go with the following copyright:
@@ -942,9 +917,7 @@ func findPreopenForPath(path string) (wasiDir, string) {
 // -- END fs_wasip1.go --
 
 // int open(const char *pathname, int flags, mode_t mode);
-//
-//export open
-func open(pathname *byte, flags int32, mode uint32) int32 {
+func libc_open(pathname *byte, flags int32, mode uint32) int32 {
 	path := goString(pathname)
 	dir, relPath := findPreopenForPath(path)
 	if dir.d == cm.ResourceNone {
@@ -1094,9 +1067,7 @@ type libc_DIR struct {
 }
 
 // DIR *fdopendir(int);
-//
-//export fdopendir
-func fdopendir(fd int32) unsafe.Pointer {
+func libc_fdopendir(fd int32) unsafe.Pointer {
 	if _, ok := wasiStreams[fd]; ok {
 		libcErrno = EBADF
 		return nil
@@ -1122,9 +1093,7 @@ func fdopendir(fd int32) unsafe.Pointer {
 }
 
 // int fdclosedir(DIR *);
-//
-//export fdclosedir
-func fdclosedir(dirp unsafe.Pointer) int32 {
+func libc_fdclosedir(dirp unsafe.Pointer) int32 {
 	if dirp == nil {
 		return 0
 
@@ -1141,9 +1110,7 @@ func fdclosedir(dirp unsafe.Pointer) int32 {
 }
 
 // struct dirent *readdir(DIR *);
-//
-//export readdir
-func readdir(dirp unsafe.Pointer) *Dirent {
+func libc_readdir(dirp unsafe.Pointer) *Dirent {
 	if dirp == nil {
 		return nil
 
@@ -1240,9 +1207,7 @@ func populateEnvironment() {
 }
 
 // char * getenv(const char *name);
-//
-//export getenv
-func getenv(key *byte) *byte {
+func libc_getenv(key *byte) *byte {
 	k := goString(key)
 
 	v, ok := libc_envs[k]
@@ -1259,9 +1224,7 @@ func getenv(key *byte) *byte {
 }
 
 // int setenv(const char *name, const char *value, int overwrite);
-//
-//export setenv
-func setenv(key, value *byte, overwrite int) int {
+func libc_setenv(key, value *byte, overwrite int) int {
 	k := goString(key)
 	if _, ok := libc_envs[k]; ok && overwrite == 0 {
 		return 0
@@ -1274,27 +1237,21 @@ func setenv(key, value *byte, overwrite int) int {
 }
 
 // int unsetenv(const char *name);
-//
-//export unsetenv
-func unsetenv(key *byte) int {
+func libc_unsetenv(key *byte) int {
 	k := goString(key)
 	delete(libc_envs, k)
 	return 0
 }
 
 // void arc4random_buf (void *, size_t);
-//
-//export arc4random_buf
-func arc4random_buf(p unsafe.Pointer, l uint) {
+func libc_arc4random_buf(p unsafe.Pointer, l uint) {
 	result := random.GetRandomBytes(uint64(l))
 	s := result.Slice()
 	memcpy(unsafe.Pointer(p), unsafe.Pointer(unsafe.SliceData(s)), uintptr(l))
 }
 
 // int chdir(char *name)
-//
-//export chdir
-func chdir(name *byte) int {
+func libc_chdir(name *byte) int {
 	path := goString(name) + "/"
 
 	if !isAbs(path) {
@@ -1325,9 +1282,7 @@ func chdir(name *byte) int {
 }
 
 // char *getcwd(char *buf, size_t size)
-//
-//export getcwd
-func getcwd(buf *byte, size uint) *byte {
+func libc_getcwd(buf *byte, size uint) *byte {
 
 	cwd := libcCWD.root
 	if libcCWD.rel != "" && libcCWD.rel != "." && libcCWD.rel != "./" {
@@ -1354,9 +1309,7 @@ func getcwd(buf *byte, size uint) *byte {
 }
 
 // int truncate(const char *path, off_t length);
-//
-//export truncate
-func truncate(path *byte, length int64) int32 {
+func libc_truncate(path *byte, length int64) int32 {
 	libcErrno = ENOSYS
 	return -1
 }

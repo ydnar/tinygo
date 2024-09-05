@@ -5,7 +5,6 @@ package runtime
 import (
 	"unsafe"
 
-	"internal/wasi/cli/v0.2.0/environment"
 	monotonicclock "internal/wasi/clocks/v0.2.0/monotonic-clock"
 )
 
@@ -33,7 +32,7 @@ var args []string
 //go:linkname os_runtime_args os.runtime_args
 func os_runtime_args() []string {
 	if args == nil {
-		args = environment.GetArguments().Slice()
+		// args = environment.GetArguments().Slice()
 	}
 	return args
 }

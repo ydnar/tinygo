@@ -19,8 +19,3 @@ func Getwd() (string, error) {
 	}
 	return string(buf[:n]), nil
 }
-
-// char *getcwd(char *buf, size_t size)
-//
-//export getcwd
-func libc_getcwd(buf *byte, size uint) *byte
