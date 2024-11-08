@@ -232,7 +232,6 @@ func pathsToOverride(goMinor int, needsSyscallPackage bool) map[string]bool {
 		"":                            true,
 		"crypto/":                     true,
 		"crypto/rand/":                false,
-		"crypto/tls/":                 false,
 		"crypto/x509/":                true,
 		"crypto/x509/internal/":       true,
 		"crypto/x509/internal/macos/": false,
