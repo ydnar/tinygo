@@ -184,6 +184,18 @@ type structField struct {
 	data      unsafe.Pointer // various bits of information, packed in a byte array
 }
 
+// rawStructField is the same as StructField but with the Type member replaced
+// with rawType. For internal use only. Avoiding this conversion to the Type
+// interface improves code size in many cases.
+type rawStructField struct {
+	Name      string
+	PkgPath   string
+	Type      *rawType
+	Tag       string // TODO: StructTag
+	Offset    uintptr
+	Anonymous bool
+}
+
 func TypeOf(i interface{}) Type {
 	if i == nil {
 		return nil
@@ -290,6 +302,37 @@ func typeElem(t *rawType) *rawType {
 	}
 }
 
+var errTypeField = &TypeError{"Field"}
+
+func typeRawField(t *rawType, n int) rawStructField {
+	if t.Kind() != Struct {
+		panic(errTypeField)
+	}
+	descriptor := (*structType)(unsafe.Pointer(t.underlying()))
+	if uint(n) >= uint(descriptor.numField) {
+		panic("reflect: field index out of range")
+	}
+
+	// Iterate over all the fields to calculate the offset.
+	// This offset could have been stored directly in the array (to make the
+	// lookup faster), but by calculating it on-the-fly a bit of storage can be
+	// saved.
+	field := (*structField)(unsafe.Add(unsafe.Pointer(&descriptor.fields[0]), uintptr(n)*unsafe.Sizeof(structField{})))
+	data := field.data
+
+	// Read some flags of this field, like whether the field is an embedded
+	// field. See structFieldFlagAnonymous and similar flags.
+	flagsByte := *(*byte)(data)
+	data = unsafe.Add(data, 1)
+	offset, lenOffs := uvarint32(unsafe.Slice((*byte)(data), maxVarintLen32))
+	data = unsafe.Add(data, lenOffs)
+
+	name := readStringZ(data)
+	data = unsafe.Add(data, len(name))
+
+	return rawStructFieldFromPointer(descriptor, field.fieldType, data, flagsByte, name, offset)
+}
+
 func typeNumMethod(t *rawType) int {
 	if t.isNamed() {
 		return int((*namedType)(unsafe.Pointer(t)).numMethod)
@@ -307,6 +350,21 @@ func typeNumMethod(t *rawType) int {
 
 	// Other types have no methods attached.  Note we don't panic here.
 	return 0
+}
+
+// Read and return a null terminated string starting from data.
+func readStringZ(data unsafe.Pointer) string {
+	start := data
+	var len uintptr
+	for *(*byte)(data) != 0 {
+		len++
+		data = unsafe.Add(data, 1) // C: data++
+	}
+
+	return *(*string)(unsafe.Pointer(&stringHeader{
+		data: start,
+		len:  len,
+	}))
 }
 
 func typeAssignableTo(t, u *rawType) bool {
@@ -359,4 +417,20 @@ func (t *rawType) String() string { panic("todo: internal/reflectlite.Type.Strin
 
 func (t *rawType) Elem() Type {
 	return typeElem(t)
+}
+
+const maxVarintLen32 = 5
+
+// encoding/binary.Uvarint, specialized for uint32
+func uvarint32(buf []byte) (uint32, int) {
+	var x uint32
+	var s uint
+	for i, b := range buf {
+		if b < 0x80 {
+			return x | uint32(b)<<s, i + 1
+		}
+		x |= uint32(b&0x7f) << s
+		s += 7
+	}
+	return 0, 0
 }

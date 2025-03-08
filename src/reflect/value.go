@@ -6,52 +6,28 @@ import (
 	"unsafe"
 )
 
-type valueFlags uint8
-
-// Flags list some useful flags that contain some extra information not
-// contained in an interface{} directly, like whether this value was exported at
-// all (it is possible to read unexported fields using reflection, but it is not
-// possible to modify them).
-//
-// These flags are shared with the internal/reflectlite package.
-const (
-	valueFlagIndirect valueFlags = 1 << iota
-	valueFlagExported
-	valueFlagEmbedRO
-	valueFlagStickyRO
-
-	valueFlagRO = valueFlagEmbedRO | valueFlagStickyRO
-)
-
-func (v valueFlags) ro() valueFlags {
-	if v&valueFlagRO != 0 {
-		return valueFlagStickyRO
-	}
-	return 0
-}
-
 type Value struct {
 	typecode *rawType
 	value    unsafe.Pointer
-	flags    valueFlags
+	flags    reflectlite.ValueFlags
 }
 
 // isIndirect returns whether the value pointer in this Value is always a
 // pointer to the value. If it is false, it is only a pointer to the value if
 // the value is bigger than a pointer.
 func (v Value) isIndirect() bool {
-	return v.flags&valueFlagIndirect != 0
+	return v.flags&ValueFlagIndirect != 0
 }
 
 // isExported returns whether the value represented by this Value could be
 // accessed without violating type system constraints. For example, it is not
 // set for unexported struct fields.
 func (v Value) isExported() bool {
-	return v.flags&valueFlagExported != 0
+	return v.flags&ValueFlagExported != 0
 }
 
 func (v Value) isRO() bool {
-	return v.flags&(valueFlagRO) != 0
+	return v.flags&(ValueFlagRO) != 0
 }
 
 func (v Value) checkRO() {
@@ -78,7 +54,7 @@ func ValueOf(i interface{}) Value {
 	return Value{
 		typecode: (*rawType)(typecode),
 		value:    value,
-		flags:    valueFlagExported,
+		flags:    ValueFlagExported,
 	}
 }
 
@@ -155,14 +131,6 @@ func (v Value) IsZero() bool {
 	}
 }
 
-// Internal function only, do not use.
-//
-// RawType returns the raw, underlying type code. It is used in the runtime
-// package and needs to be exported for the runtime package to access it.
-func (v Value) RawType() *rawType {
-	return v.typecode
-}
-
 func (v Value) Kind() Kind {
 	return v.typecode.Kind()
 }
@@ -220,7 +188,7 @@ func (v Value) CanInterface() bool {
 }
 
 func (v Value) CanAddr() bool {
-	return v.flags&(valueFlagIndirect) == valueFlagIndirect
+	return v.flags&(ValueFlagIndirect) == ValueFlagIndirect
 }
 
 func (v Value) Comparable() bool {
@@ -267,7 +235,7 @@ func (v Value) Addr() Value {
 	}
 	// Preserve flagRO instead of using v.flag.ro() so that
 	// v.Addr().Elem() is equivalent to v (#32772)
-	flags := v.flags & (valueFlagExported | valueFlagRO)
+	flags := v.flags & (ValueFlagExported | ValueFlagRO)
 	return Value{
 		typecode: pointerTo(v.typecode),
 		value:    v.value,
@@ -280,7 +248,7 @@ func (v Value) UnsafeAddr() uintptr {
 }
 
 func (v Value) CanSet() bool {
-	return v.flags&(valueFlagExported|valueFlagIndirect|valueFlagRO) == valueFlagExported|valueFlagIndirect
+	return v.flags&(ValueFlagExported|ValueFlagIndirect|ValueFlagRO) == ValueFlagExported|ValueFlagIndirect
 }
 
 func (v Value) Bool() bool {
@@ -485,16 +453,11 @@ func (v Value) Complex() complex128 {
 	}
 }
 
+//go:linkname valueElem internal/reflectlite.valueString
+func valueString(v Value) string
+
 func (v Value) String() string {
-	switch v.Kind() {
-	case String:
-		// A string value is always bigger than a pointer as it is made of a
-		// pointer and a length.
-		return *(*string)(v.value)
-	default:
-		// Special case because of the special treatment of .String() in Go.
-		return "<" + v.typecode.String() + " Value>"
-	}
+	return valueString(v)
 }
 
 func (v Value) Bytes() []byte {
@@ -701,170 +664,19 @@ func (v Value) Elem() Value {
 	return valueElem(v)
 }
 
+//go:linkname valueElem internal/reflectlite.valueField
+func valueField(v Value, i int) Value
+
 // Field returns the value of the i'th field of this struct.
 func (v Value) Field(i int) Value {
-	if v.Kind() != Struct {
-		panic(&ValueError{Method: "Field", Kind: v.Kind()})
-	}
-	structField := v.typecode.rawField(i)
-
-	// Copy flags but clear EmbedRO; we're not an embedded field anymore
-	flags := v.flags & ^valueFlagEmbedRO
-	if structField.PkgPath != "" {
-		// No PkgPath => not exported.
-		// Clear exported flag even if the parent was exported.
-		flags &^= valueFlagExported
-
-		// Update the RO flag
-		if structField.Anonymous {
-			// Embedded field
-			flags |= valueFlagEmbedRO
-		} else {
-			flags |= valueFlagStickyRO
-		}
-	} else {
-		// Parent field may not have been exported but we are
-		flags |= valueFlagExported
-	}
-
-	size := v.typecode.Size()
-	fieldType := structField.Type
-	fieldSize := fieldType.Size()
-	if v.isIndirect() || fieldSize > unsafe.Sizeof(uintptr(0)) {
-		// v.value was already a pointer to the value and it should stay that
-		// way.
-		return Value{
-			flags:    flags,
-			typecode: fieldType,
-			value:    unsafe.Add(v.value, structField.Offset),
-		}
-	}
-
-	// The fieldSize is smaller than uintptr, which means that the value will
-	// have to be stored directly in the interface value.
-
-	if fieldSize == 0 {
-		// The struct field is zero sized.
-		// This is a rare situation, but because it's undefined behavior
-		// to shift the size of the value (zeroing the value), handle this
-		// situation explicitly.
-		return Value{
-			flags:    flags,
-			typecode: fieldType,
-			value:    unsafe.Pointer(nil),
-		}
-	}
-
-	if size > unsafe.Sizeof(uintptr(0)) {
-		// The value was not stored in the interface before but will be
-		// afterwards, so load the value (from the correct offset) and return
-		// it.
-		ptr := unsafe.Add(v.value, structField.Offset)
-		value := unsafe.Pointer(loadValue(ptr, fieldSize))
-		return Value{
-			flags:    flags &^ valueFlagIndirect,
-			typecode: fieldType,
-			value:    value,
-		}
-	}
-
-	// The value was already stored directly in the interface and it still
-	// is. Cut out the part of the value that we need.
-	value := maskAndShift(uintptr(v.value), structField.Offset, fieldSize)
-	return Value{
-		flags:    flags,
-		typecode: fieldType,
-		value:    unsafe.Pointer(value),
-	}
+	return valueField(v, i)
 }
 
-var uint8Type = TypeOf(uint8(0)).(*rawType)
+//go:linkname valueElem internal/reflectlite.valueIndex
+func valueIndex(v Value, i int) Value
 
 func (v Value) Index(i int) Value {
-	switch v.Kind() {
-	case Slice:
-		// Extract an element from the slice.
-		slice := *(*sliceHeader)(v.value)
-		if uint(i) >= uint(slice.len) {
-			panic("reflect: slice index out of range")
-		}
-		flags := (v.flags & (valueFlagExported | valueFlagIndirect)) | valueFlagIndirect | v.flags.ro()
-		elem := Value{
-			typecode: v.typecode.elem(),
-			flags:    flags,
-		}
-		elem.value = unsafe.Add(slice.data, elem.typecode.Size()*uintptr(i)) // pointer to new value
-		return elem
-	case String:
-		// Extract a character from a string.
-		// A string is never stored directly in the interface, but always as a
-		// pointer to the string value.
-		// Keeping valueFlagExported if set, but don't set valueFlagIndirect
-		// otherwise CanSet will return true for string elements (which is bad,
-		// strings are read-only).
-		s := *(*stringHeader)(v.value)
-		if uint(i) >= uint(s.len) {
-			panic("reflect: string index out of range")
-		}
-		return Value{
-			typecode: uint8Type,
-			value:    unsafe.Pointer(uintptr(*(*uint8)(unsafe.Add(s.data, i)))),
-			flags:    v.flags & valueFlagExported,
-		}
-	case Array:
-		// Extract an element from the array.
-		elemType := v.typecode.elem()
-		elemSize := elemType.Size()
-		size := v.typecode.Size()
-		if size == 0 {
-			// The element size is 0 and/or the length of the array is 0.
-			return Value{
-				typecode: v.typecode.elem(),
-				flags:    v.flags,
-			}
-		}
-		if elemSize > unsafe.Sizeof(uintptr(0)) {
-			// The resulting value doesn't fit in a pointer so must be
-			// indirect. Also, because size != 0 this implies that the array
-			// length must be != 0, and thus that the total size is at least
-			// elemSize.
-			addr := unsafe.Add(v.value, elemSize*uintptr(i)) // pointer to new value
-			return Value{
-				typecode: v.typecode.elem(),
-				flags:    v.flags,
-				value:    addr,
-			}
-		}
-
-		if size > unsafe.Sizeof(uintptr(0)) || v.isIndirect() {
-			// The element fits in a pointer, but the array is not stored in the pointer directly.
-			// Load the value from the pointer.
-			addr := unsafe.Add(v.value, elemSize*uintptr(i)) // pointer to new value
-			value := addr
-			if !v.isIndirect() {
-				// Use a pointer to the value (don't load the value) if the
-				// 'indirect' flag is set.
-				value = unsafe.Pointer(loadValue(addr, elemSize))
-			}
-			return Value{
-				typecode: v.typecode.elem(),
-				flags:    v.flags,
-				value:    value,
-			}
-		}
-
-		// The value fits in a pointer, so extract it with some shifting and
-		// masking.
-		offset := elemSize * uintptr(i)
-		value := maskAndShift(uintptr(v.value), offset, elemSize)
-		return Value{
-			typecode: v.typecode.elem(),
-			flags:    v.flags,
-			value:    unsafe.Pointer(value),
-		}
-	default:
-		panic(&ValueError{Method: "Index", Kind: v.Kind()})
-	}
+	return valueIndex(v, i)
 }
 
 func (v Value) NumMethod() int {
@@ -1231,7 +1043,7 @@ func convertOp(src Value, typ Type) (Value, bool) {
 		return Value{
 			typecode: rtype,
 			value:    unsafe.Pointer(&iface),
-			flags:    valueFlagExported,
+			flags:    ValueFlagExported,
 		}, true
 	}
 
@@ -1281,7 +1093,7 @@ func convertOp(src Value, typ Type) (Value, bool) {
 				return Value{
 					typecode: rtype,
 					value:    (*sliceHeader)(src.value).data,
-					flags:    src.flags | valueFlagIndirect,
+					flags:    src.flags | ValueFlagIndirect,
 				}, true
 			}
 		case Pointer:
@@ -1290,7 +1102,7 @@ func convertOp(src Value, typ Type) (Value, bool) {
 					return Value{
 						typecode: rtype,
 						value:    (*sliceHeader)(src.value).data,
-						flags:    src.flags & (valueFlagExported | valueFlagRO),
+						flags:    src.flags & (ValueFlagExported | ValueFlagRO),
 					}, true
 				}
 			}
@@ -1383,7 +1195,7 @@ func cvtBytesString(v Value, t *rawType) Value {
 	}
 }
 
-func makeInt(flags valueFlags, bits uint64, t *rawType) Value {
+func makeInt(flags ValueFlags, bits uint64, t *rawType) Value {
 	size := t.Size()
 
 	v := Value{
@@ -1410,7 +1222,7 @@ func makeInt(flags valueFlags, bits uint64, t *rawType) Value {
 	return v
 }
 
-func makeFloat(flags valueFlags, f float64, t *rawType) Value {
+func makeFloat(flags ValueFlags, f float64, t *rawType) Value {
 	size := t.Size()
 
 	v := Value{
@@ -1433,7 +1245,7 @@ func makeFloat(flags valueFlags, f float64, t *rawType) Value {
 	return v
 }
 
-func makeFloat32(flags valueFlags, f float32, t *rawType) Value {
+func makeFloat32(flags ValueFlags, f float32, t *rawType) Value {
 	v := Value{
 		typecode: t,
 		flags:    flags,
@@ -1493,7 +1305,7 @@ func MakeSlice(typ Type, len, cap int) Value {
 	return Value{
 		typecode: rtype,
 		value:    unsafe.Pointer(&slice),
-		flags:    valueFlagExported,
+		flags:    ValueFlagExported,
 	}
 }
 
@@ -1514,7 +1326,7 @@ func Zero(typ Type) Value {
 		return Value{
 			typecode: typ.(*rawType),
 			value:    nil,
-			flags:    valueFlagExported | valueFlagRO,
+			flags:    ValueFlagExported | ValueFlagRO,
 		}
 	}
 
@@ -1522,14 +1334,14 @@ func Zero(typ Type) Value {
 		return Value{
 			typecode: typ.(*rawType),
 			value:    unsafe.Pointer(zerobuffer),
-			flags:    valueFlagExported | valueFlagRO,
+			flags:    ValueFlagExported | ValueFlagRO,
 		}
 	}
 
 	return Value{
 		typecode: typ.(*rawType),
 		value:    alloc(size, nil),
-		flags:    valueFlagExported | valueFlagRO,
+		flags:    ValueFlagExported | ValueFlagRO,
 	}
 }
 
@@ -1539,7 +1351,7 @@ func New(typ Type) Value {
 	return Value{
 		typecode: pointerTo(typ.(*rawType)),
 		value:    alloc(typ.Size(), nil),
-		flags:    valueFlagExported,
+		flags:    ValueFlagExported,
 	}
 }
 
@@ -1691,7 +1503,7 @@ func Append(v Value, x ...Value) Value {
 	}
 	oldLen := v.Len()
 	newslice := extendSlice(v, len(x))
-	v.flags = valueFlagExported
+	v.flags = ValueFlagExported
 	v.value = (unsafe.Pointer)(&newslice)
 	for i, xx := range x {
 		v.Index(oldLen + i).Set(xx)
@@ -1723,7 +1535,7 @@ func AppendSlice(s, t Value) Value {
 	return Value{
 		typecode: s.typecode,
 		value:    unsafe.Pointer(result),
-		flags:    valueFlagExported,
+		flags:    ValueFlagExported,
 	}
 }
 
@@ -1932,7 +1744,7 @@ func MakeMapWithSize(typ Type, n int) Value {
 	return Value{
 		typecode: typ.(*rawType),
 		value:    m,
-		flags:    valueFlagExported,
+		flags:    ValueFlagExported,
 	}
 }
 
