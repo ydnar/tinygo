@@ -61,7 +61,7 @@
 // The type struct is essentially a union of all the above types. Which it is,
 // can be determined by looking at the meta byte.
 
-package reflect
+package reflectlite
 
 import (
 	"internal/gclayout"

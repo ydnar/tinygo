@@ -1,4 +1,4 @@
-package reflect
+package reflectlite
 
 func MakeFunc(typ Type, fn func(args []Value) (results []Value)) Value {
 	panic("unimplemented: reflect.MakeFunc()")

@@ -4,7 +4,7 @@
 
 // Deep equality test via reflection
 
-package reflect
+package reflectlite
 
 import "unsafe"
 
