@@ -389,6 +389,20 @@ func (c *compilerContext) getLLVMType(goType types.Type) llvm.Type {
 // getLLVMType instead.
 func (c *compilerContext) makeLLVMType(goType types.Type) llvm.Type {
 	switch typ := goType.(type) {
+	case *types.Alias:
+		if st, ok := typ.Underlying().(*types.Struct); ok {
+			// Structs are a special case. While other named types are ignored
+			// in LLVM IR, named structs are implemented as named structs in
+			// LLVM. This is because it is otherwise impossible to create
+			// self-referencing types such as linked lists.
+			llvmName := typ.String()
+			llvmType := c.ctx.StructCreateNamed(llvmName)
+			c.llvmTypes.Set(goType, llvmType) // avoid infinite recursion
+			underlying := c.getLLVMType(st)
+			llvmType.StructSetBody(underlying.StructElementTypes(), false)
+			return llvmType
+		}
+		return c.getLLVMType(typ.Underlying())
 	case *types.Array:
 		elemType := c.getLLVMType(typ.Elem())
 		return llvm.ArrayType(elemType, int(typ.Len()))
@@ -496,6 +510,20 @@ func (c *compilerContext) createDIType(typ types.Type) llvm.Metadata {
 	llvmType := c.getLLVMType(typ)
 	sizeInBytes := c.targetData.TypeAllocSize(llvmType)
 	switch typ := typ.(type) {
+	case *types.Alias:
+		// Placeholder metadata node, to be replaced afterwards.
+		temporaryMDNode := c.dibuilder.CreateReplaceableCompositeType(llvm.Metadata{}, llvm.DIReplaceableCompositeType{
+			Tag:         dwarf.TagTypedef,
+			SizeInBits:  sizeInBytes * 8,
+			AlignInBits: uint32(c.targetData.ABITypeAlignment(llvmType)) * 8,
+		})
+		c.ditypes[typ] = temporaryMDNode
+		md := c.dibuilder.CreateTypedef(llvm.DITypedef{
+			Type: c.getDIType(typ.Underlying()),
+			Name: typ.String(),
+		})
+		temporaryMDNode.ReplaceAllUsesWith(md)
+		return md
 	case *types.Array:
 		return c.dibuilder.CreateArrayType(llvm.DIArrayType{
 			SizeInBits:  sizeInBytes * 8,
