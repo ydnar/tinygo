@@ -31,20 +31,7 @@ func os_runtime_args() []string {
 
 //export cabi_realloc
 func cabi_realloc(ptr unsafe.Pointer, oldSize, align, newSize uintptr) unsafe.Pointer {
-	if newSize == 0 {
-		return nil
-	}
-	newPtr := realloc(ptr, newSize)
-	if ptr != nil {
-		for i := range wasmAllocs {
-			if wasmAllocs[i] == ptr {
-				wasmAllocs[i] = newPtr
-				return newPtr
-			}
-		}
-	}
-	wasmAllocs = append(wasmAllocs, newPtr)
-	return newPtr
+	return libc_realloc(ptr, newSize)
 }
 
 func ticksToNanoseconds(ticks timeUnit) int64 {

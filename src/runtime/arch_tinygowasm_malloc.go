@@ -12,6 +12,18 @@ import "unsafe"
 // the size of the allocation.
 var allocs = make(map[unsafe.Pointer]uintptr)
 
+// Release releases ptr from the retained malloc allocations.
+// Returns nil if the pointer is not a retained allocation.
+// This allows Component Model / wasip2 allocations via cabi_realloc
+// to eventually be freed by the GC.
+func Release(ptr unsafe.Pointer) unsafe.Pointer {
+	if _, ok := allocs[ptr]; ok {
+		delete(allocs, ptr)
+		return ptr
+	}
+	return nil
+}
+
 //export malloc
 func libc_malloc(size uintptr) unsafe.Pointer {
 	if size == 0 {
